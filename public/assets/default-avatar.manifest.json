@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 2,
+  "defaultPackId": "default-navigator-v1",
+  "availablePacks": [
+    {
+      "id": "default-navigator-v1",
+      "manifest": "default-navigator-v1.manifest.json"
+    }
+  ]
+}

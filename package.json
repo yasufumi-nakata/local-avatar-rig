@@ -1,0 +1,39 @@
+{
+  "name": "local-avatar-rig",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:lan": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "playwright test",
+    "capture:default": "node scripts/capture-avatar-states.mjs",
+    "assets:check": "node scripts/verify-assets.mjs",
+    "check": "pnpm assets:check && pnpm test && pnpm build",
+    "security:audit": "pnpm audit --prod && pnpm audit"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "1.0.1",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "^22.20.1",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "^5.7.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.0.18"
+  }
+}

@@ -1,0 +1,139 @@
+/*
+ * 軽量WebGLリグです。顔・胴体・前/横/後髪は
+ * Canvas内で別の重みと物理応答を持ち、この要素はポインター追従だけを担います。
+ * 顔追従値はRefとuniformで渡すため、毎フレームReactを再描画しません。
+ */
+.avatar-scene .avatar-rig {
+  --rig-x: 0px;
+  --rig-y: 0px;
+  --rig-yaw: 0deg;
+  --rig-pitch: 0deg;
+  --rig-roll: 0deg;
+  --rig-scale: 1;
+  --blink-left: 0;
+  --blink-right: 0;
+  --smile: 0;
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: translate3d(var(--look-x), var(--look-y), 0);
+  filter: drop-shadow(0 20px 30px rgba(0, 0, 0, 0.34));
+  will-change: transform;
+}
+
+.avatar-rig-canvas,
+.avatar-scene .avatar-rig .avatar-character-fallback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  user-select: none;
+}
+
+.avatar-rig-canvas {
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  will-change: contents;
+}
+
+.avatar-rig-canvas[data-rig-ready="true"] {
+  opacity: 1;
+}
+
+.avatar-scene .avatar-rig .avatar-character-fallback {
+  z-index: 1;
+  object-fit: fill;
+  opacity: 1;
+  transform:
+    translate3d(var(--rig-x), var(--rig-y), 0)
+    rotate(var(--rig-roll))
+    scale(var(--rig-scale));
+  transform-origin: 50% 76%;
+  transition: opacity 120ms ease;
+  animation: none;
+  filter: none;
+}
+
+.avatar-rig-canvas[data-rig-ready="true"] + .avatar-character-fallback {
+  opacity: 0;
+}
+
+/* WebGLが利用できない環境でも静止せず、Z回転と小さな呼吸だけを残します。 */
+.avatar-scene.motion-enabled .avatar-rig-canvas:not([data-rig-ready="true"]) + .avatar-character-fallback {
+  animation: avatarRigFallbackBreath 5.2s ease-in-out infinite;
+}
+
+.face-tracking-input {
+  position: fixed;
+  top: -4px;
+  left: -4px;
+  width: 2px;
+  height: 2px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.face-tracking-status {
+  position: absolute;
+  z-index: 8;
+  top: 56px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  color: #bceeff;
+  border: 1px solid rgba(67, 213, 255, 0.42);
+  border-radius: 7px;
+  background: rgba(5, 12, 19, 0.82);
+  backdrop-filter: blur(12px);
+  font-size: 13px;
+}
+
+.face-tracking-status.with-hearing {
+  top: 98px;
+}
+
+.face-tracking-status.searching {
+  color: #f5d698;
+  border-color: rgba(245, 198, 107, 0.42);
+}
+
+.face-tracking-status.tracking {
+  color: #bfeeca;
+  border-color: rgba(105, 223, 132, 0.44);
+}
+
+.face-tracking-message {
+  margin-left: auto;
+  color: #9fdff1;
+  text-align: right;
+}
+
+@keyframes avatarRigFallbackBreath {
+  0%,
+  100% {
+    transform: translate3d(var(--rig-x), calc(var(--rig-y) + 2px), 0) rotate(var(--rig-roll)) scale(var(--rig-scale));
+  }
+  50% {
+    transform: translate3d(var(--rig-x), calc(var(--rig-y) - 2px), 0) rotate(var(--rig-roll)) scale(calc(var(--rig-scale) * 1.006));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-scene.motion-enabled .avatar-rig-canvas:not([data-rig-ready="true"]) + .avatar-character-fallback {
+    animation: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .face-tracking-status {
+    display: none;
+  }
+}
