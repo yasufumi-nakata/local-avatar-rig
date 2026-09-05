@@ -46,6 +46,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 4173,
     strictPort: true,
+    // React Fast Refresh injects an inline preamble, which the strict CSP rejects.
+    // Keep the same script restrictions in development; reload after source edits.
+    hmr: false,
     headers: securityHeaders,
   },
   preview: {
