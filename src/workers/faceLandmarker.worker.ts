@@ -2,12 +2,12 @@ import type {
   FaceLandmarker,
   FaceLandmarkerResult,
   Matrix,
-  NormalizedLandmark,
 } from "@mediapipe/tasks-vision";
 import wasmBinaryPath from "@mediapipe/tasks-vision/vision_wasm_module_internal.wasm?url";
 import wasmLoaderPath from "@mediapipe/tasks-vision/vision_wasm_module_internal.js?url";
 import { mapBlendshapeScoresToExpression } from "../lib/faceExpressionMath";
 import { createRestrictedWorkerFetch, fetchVerifiedFaceModel } from "../lib/faceModel";
+import { measureLandmarkPair, measureLandmarkSpan } from "../lib/faceLandmarkGeometry";
 import type { FaceRigPose } from "../lib/faceRigPose";
 import {
   mapFaceSampleToRigPose,
@@ -32,7 +32,6 @@ type FaceSample = FaceTrackingSample;
 let landmarker: FaceLandmarker | null = null;
 let calibration: FaceCalibration | null = null;
 let initializing: Promise<void> | null = null;
-let lastFaceAt = 0;
 const workerRuntime = "local-avatar-rig-local-wasm-v3";
 
 // Workerからの外部通信は、利用者が顔追従を開始した後の固定モデル取得だけを許可します。
@@ -68,10 +67,6 @@ function scoreMap(result: FaceLandmarkerResult) {
   );
 }
 
-function distance(first: NormalizedLandmark, second: NormalizedLandmark) {
-  return Math.hypot(first.x - second.x, first.y - second.y);
-}
-
 // MediaPipe exposes the 4x4 pose matrix in column-major order. We only use
 // its rotation component, then calibrate it against the first centered frame.
 function eulerDegrees(matrix: Matrix | undefined) {
@@ -88,7 +83,7 @@ function eulerDegrees(matrix: Matrix | undefined) {
   };
 }
 
-function readSample(result: FaceLandmarkerResult): FaceSample | null {
+function readSample(result: FaceLandmarkerResult, image: { width: number; height: number }): FaceSample | null {
   const landmarks = result.faceLandmarks[0];
   if (!landmarks || landmarks.length < 455) return null;
 
@@ -103,10 +98,11 @@ function readSample(result: FaceLandmarkerResult): FaceSample | null {
 
   const centerX = (leftTemple.x + rightTemple.x) / 2;
   const centerY = (forehead.y + chin.y) / 2;
-  const faceWidth = Math.max(0.001, distance(leftTemple, rightTemple));
-  const eyesWidth = Math.max(0.001, distance(leftEye, rightEye));
+  const faceWidth = Math.max(0.001, measureLandmarkSpan(leftTemple, rightTemple, image));
+  const eyeLine = measureLandmarkPair(leftEye, rightEye, image);
+  const eyesWidth = Math.max(0.001, eyeLine.distance);
   const eyeMidX = (leftEye.x + rightEye.x) / 2;
-  const eyeRoll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x) * (180 / Math.PI);
+  const eyeRoll = eyeLine.angleDegrees;
   const noseYaw = ((nose.x - eyeMidX) / eyesWidth) * 42;
   const rotation = eulerDegrees(result.facialTransformationMatrixes[0]);
   const scores = scoreMap(result);
@@ -189,7 +185,6 @@ async function initialize() {
   landmarker?.close();
   landmarker = null;
   calibration = null;
-  lastFaceAt = 0;
   await createLandmarker();
 }
 
@@ -217,12 +212,11 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
 
   try {
     const result = landmarker.detectForVideo(bitmap, timestamp);
-    const sample = readSample(result);
+    const sample = readSample(result, bitmap);
     if (!sample) {
-      if (lastFaceAt > 0 && timestamp - lastFaceAt > 1_500) calibration = null;
+      // 見失っても正面の基準は保持します。再開始時のinitializeだけで校正を戻します。
       postMessage({ type: "missing" });
     } else {
-      lastFaceAt = timestamp;
       postMessage({ type: "pose", pose: toRigPose(sample) });
     }
   } catch (error) {

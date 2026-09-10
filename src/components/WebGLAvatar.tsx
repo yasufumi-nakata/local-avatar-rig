@@ -40,6 +40,11 @@ export function WebGLAvatar({
     tracking: faceTrackingStatus === "tracking",
   });
   const profileRef = useRef(profile);
+  const latestPoseRef = useRef(poseRef);
+
+  useEffect(() => {
+    latestPoseRef.current = poseRef;
+  }, [poseRef]);
 
   useEffect(() => {
     profileRef.current = profile;
@@ -68,33 +73,62 @@ export function WebGLAvatar({
     let animationFrame = 0;
     let renderer: WebGLAvatarRenderer | null = null;
 
-    try {
-      renderer = new WebGLAvatarRenderer(canvas);
-    } catch (error) {
-      canvas.dataset.rigError = error instanceof Error ? error.message : "2Dメッシュ変形を開始できませんでした。";
-      return;
-    }
+    const stopRenderer = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = 0;
+      renderer?.destroy();
+      renderer = null;
+    };
 
-    void renderer.initialize(assets)
-      .then(() => {
-        if (!active || !renderer) return;
-        const render = (now: number) => {
-          if (!active || !renderer) return;
-          renderer.render(now, poseRef.current, frameOptionsRef.current, profileRef.current);
+    const startRenderer = () => {
+      if (!active) return;
+      stopRenderer();
+      delete canvas.dataset.rigReady;
+      delete canvas.dataset.rigError;
+
+      let nextRenderer: WebGLAvatarRenderer;
+      try {
+        nextRenderer = new WebGLAvatarRenderer(canvas);
+        renderer = nextRenderer;
+      } catch (error) {
+        canvas.dataset.rigError = error instanceof Error ? error.message : "2Dメッシュ変形を開始できませんでした。";
+        return;
+      }
+
+      void nextRenderer.initialize(assets)
+        .then(() => {
+          if (!active || renderer !== nextRenderer || canvas.dataset.rigReady !== "true") return;
+          const render = (now: number) => {
+            if (!active || renderer !== nextRenderer) return;
+            nextRenderer.render(now, latestPoseRef.current.current, frameOptionsRef.current, profileRef.current);
+            animationFrame = window.requestAnimationFrame(render);
+          };
           animationFrame = window.requestAnimationFrame(render);
-        };
-        animationFrame = window.requestAnimationFrame(render);
-      })
-      .catch((error: unknown) => {
-        canvas.dataset.rigError = error instanceof Error ? error.message : "2Dメッシュ素材を準備できませんでした。";
-      });
+        })
+        .catch((error: unknown) => {
+          if (!active || renderer !== nextRenderer) return;
+          stopRenderer();
+          canvas.dataset.rigError = error instanceof Error ? error.message : "2Dメッシュ素材を準備できませんでした。";
+        });
+    };
+
+    const handleContextLost = (event: Event) => {
+      // 復旧イベントを受け取れるよう既定動作を止め、画像へ戻します。
+      event.preventDefault();
+      stopRenderer();
+      canvas.dataset.rigError = "描画機能が一時停止しています。復旧を待っています。";
+    };
+    canvas.addEventListener("webglcontextlost", handleContextLost);
+    canvas.addEventListener("webglcontextrestored", startRenderer);
+    startRenderer();
 
     return () => {
       active = false;
-      window.cancelAnimationFrame(animationFrame);
-      renderer?.destroy();
+      canvas.removeEventListener("webglcontextlost", handleContextLost);
+      canvas.removeEventListener("webglcontextrestored", startRenderer);
+      stopRenderer();
     };
-  }, [assets.blink, assets.mouthOpen, assets.neutral, canvasRef, poseRef]);
+  }, [assets.blink, assets.mouthOpen, assets.neutral, canvasRef]);
 
   return (
     <>

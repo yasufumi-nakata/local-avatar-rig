@@ -20,11 +20,13 @@ import {
   BUILT_IN_AVATAR_PACK_LIST,
   type BuiltInAvatarPackId,
 } from "../lib/modelPack";
-import type { RigProfile } from "../lib/webglAvatarRenderer";
+import type { RigProfile } from "../lib/avatarRigProfile";
 import type { BackgroundMode } from "./AvatarStage";
+import { BoneEditor } from "./BoneEditor";
 
 interface ControlPanelProps {
   activeModelId: BuiltInAvatarPackId | "custom";
+  neutralImage: string;
   onModelChange: (modelId: BuiltInAvatarPackId) => void;
   pose: FaceRigPose;
   onPoseChange: (pose: FaceRigPose) => void;
@@ -93,6 +95,7 @@ const presets: Array<{ label: string; icon: typeof Smile; pose: Partial<FaceRigP
 
 export function ControlPanel({
   activeModelId,
+  neutralImage,
   onModelChange,
   pose,
   onPoseChange,
@@ -251,6 +254,11 @@ export function ControlPanel({
           <Slider label="笑顔" value={pose.smile} minimum={0} maximum={1} step={0.01} disabled={manualDisabled} onChange={(value) => changePose("smile", value)} />
         </div>
       </section>
+
+      <details className="control-section bone-section">
+        <summary>首・肩のボーン位置</summary>
+        <BoneEditor image={neutralImage} profile={profile} onChange={onProfileChange} />
+      </details>
 
       <details className="control-section calibration-section">
         <summary>独自モデルの顔パッチ位置</summary>

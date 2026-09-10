@@ -40,6 +40,39 @@ describe("rig motion curves", () => {
 });
 
 describe("secondary motion controller", () => {
+  it("advances the same amount of physics time from 10 to 240fps", () => {
+    const simulate = (fps: number) => {
+      const controller = new SecondaryMotionController();
+      const pose = { yaw: 24, pitch: -12, roll: 8 };
+      let frame = controller.step(0, pose, true, 0.35);
+      for (let index = 0; index < fps; index += 1) {
+        frame = controller.step(1 / fps, pose, true, 0.35);
+      }
+      return frame;
+    };
+    const reference = simulate(60);
+
+    for (const fps of [10, 15, 24, 30, 90, 120, 144, 240]) {
+      expect(simulate(fps), `${fps}fps after one second`).toEqual(reference);
+    }
+  });
+
+  it("bounds long frame catch-up while retaining the previous fractional step", () => {
+    const controller = new SecondaryMotionController();
+    const reference = new SecondaryMotionController();
+    const pose = { yaw: 18, pitch: 6, roll: -8 };
+
+    controller.step(1 / 120, pose, true, 0.5);
+    controller.step(30, pose, true, 0.5);
+    const frame = controller.step(1 / 120, pose, true, 0.5);
+    let expected = reference.step(0, pose, true, 0.5);
+    for (let index = 0; index < 7; index += 1) {
+      expected = reference.step(1 / 60, pose, true, 0.5);
+    }
+
+    expect(frame).toEqual(expected);
+  });
+
   it("keeps the manual motion-off pose deterministic while retaining shoulder follow", () => {
     const controller = new SecondaryMotionController();
     const frame = controller.step(1 / 60, { yaw: 24, pitch: 0, roll: 0 }, false, 0);

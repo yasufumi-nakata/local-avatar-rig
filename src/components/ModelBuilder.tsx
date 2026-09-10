@@ -23,10 +23,19 @@ import {
   type ModelBrief,
   validateAssetInspections,
 } from "../lib/modelPack";
+import type { RigProfile } from "../lib/avatarRigProfile";
+import { BoneEditor } from "./BoneEditor";
+
+interface RigInference {
+  profile: RigProfile;
+  confidence: "high" | "low";
+  notes: string[];
+}
 
 interface ModelBuilderProps {
   activeAssets: LocalAvatarAssetSet;
-  onApplyAssets: (assets: LocalAvatarAssetSet) => void;
+  activeProfile: RigProfile;
+  onApplyAssets: (assets: LocalAvatarAssetSet, profile: RigProfile) => void;
   onResetAssets: () => void;
 }
 
@@ -50,12 +59,18 @@ async function copyText(content: string) {
   await navigator.clipboard.writeText(content);
 }
 
-export function ModelBuilder({ activeAssets, onApplyAssets, onResetAssets }: ModelBuilderProps) {
+export function ModelBuilder({ activeAssets, activeProfile, onApplyAssets, onResetAssets }: ModelBuilderProps) {
   const [brief, setBrief] = useState<ModelBrief>(DEFAULT_MODEL_BRIEF);
   const [candidateAssets, setCandidateAssets] = useState<LocalAvatarAssetSet>(activeAssets);
   const [inspections, setInspections] = useState<Partial<Record<AssetKind, AssetInspection>>>({});
   const [fileErrors, setFileErrors] = useState<Partial<Record<AssetKind, string>>>({});
-  const [busy, setBusy] = useState<AssetKind | null>(null);
+  const [busyKinds, setBusyKinds] = useState<Partial<Record<AssetKind, boolean>>>({});
+  const [candidateProfile, setCandidateProfile] = useState<RigProfile>(activeProfile);
+  const [rigInference, setRigInference] = useState<RigInference | null>(null);
+  const [rigBusy, setRigBusy] = useState(false);
+  const [rigError, setRigError] = useState<string | null>(null);
+  const [rigRevision, setRigRevision] = useState(0);
+  const [rigManuallyAdjusted, setRigManuallyAdjusted] = useState(false);
   const [overlayState, setOverlayState] = useState<"blink" | "mouthOpen">("blink");
   const [overlayOpacity, setOverlayOpacity] = useState(0.62);
   const [copied, setCopied] = useState<string | null>(null);
@@ -65,22 +80,57 @@ export function ModelBuilder({ activeAssets, onApplyAssets, onResetAssets }: Mod
   const inputs = useRef<Partial<Record<AssetKind, HTMLInputElement | null>>>({});
   const activeAssetsRef = useRef(activeAssets);
   const ownedObjectUrlsRef = useRef(new Set<string>());
+  const mountedRef = useRef(true);
+  const fileRequestsRef = useRef<Partial<Record<AssetKind, number>>>({});
+  const rigRequestRef = useRef(0);
+  const copyTimeoutRef = useRef<number>();
   const prompts = useMemo(() => buildModelPrompts(brief), [brief]);
   const promptDocument = useMemo(() => formatPromptDocument(brief, prompts), [brief, prompts]);
   const validation = useMemo(() => validateAssetInspections(inspections), [inspections]);
   const requiredLoaded = Boolean(inspections.neutral && inspections.blink && inspections.mouthOpen);
+  const requiredBusy = Boolean(busyKinds.neutral || busyKinds.blink || busyKinds.mouthOpen);
+  const requiredError = Boolean(fileErrors.neutral || fileErrors.blink || fileErrors.mouthOpen);
+  const readyForRig = requiredLoaded && validation.valid && !requiredBusy && !requiredError;
+  const canApply = readyForRig && !busyKinds.background && !rigBusy && Boolean(rigInference);
 
   useEffect(() => {
     activeAssetsRef.current = activeAssets;
   }, [activeAssets]);
 
-  useEffect(() => () => {
-    const activeUrls = new Set(Object.values(activeAssetsRef.current));
-    for (const url of ownedObjectUrlsRef.current) {
-      if (!activeUrls.has(url)) URL.revokeObjectURL(url);
-    }
-    ownedObjectUrlsRef.current.clear();
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      window.clearTimeout(copyTimeoutRef.current);
+      const activeUrls = new Set(Object.values(activeAssetsRef.current));
+      for (const url of ownedObjectUrlsRef.current) {
+        if (!activeUrls.has(url)) URL.revokeObjectURL(url);
+      }
+      ownedObjectUrlsRef.current.clear();
+    };
   }, []);
+
+  useEffect(() => {
+    if (!readyForRig) return;
+    let cancelled = false;
+    const request = ++rigRequestRef.current;
+    setRigBusy(true);
+    setRigError(null);
+    setRigInference(null);
+    const sources = { neutral: candidateAssets.neutral, blink: candidateAssets.blink, mouthOpen: candidateAssets.mouthOpen };
+    // 推定処理は画像3枚の検証が終わってから読み込みます。
+    void import("../lib/avatarRigAnalysis").then(({ inferRigFromImages }) => inferRigFromImages(sources)).then((result) => {
+      if (cancelled || request !== rigRequestRef.current) return;
+      setCandidateProfile(result.profile);
+      setRigInference(result);
+      setRigManuallyAdjusted(false);
+    }).catch((error: unknown) => {
+      if (!cancelled && request === rigRequestRef.current) setRigError(error instanceof Error ? error.message : "画像からボーンを推定できませんでした。再試行してください。");
+    }).finally(() => {
+      if (!cancelled && request === rigRequestRef.current) setRigBusy(false);
+    });
+    return () => { cancelled = true; };
+  }, [readyForRig, candidateAssets.neutral, candidateAssets.blink, candidateAssets.mouthOpen, rigRevision]);
 
   const updateBrief = (key: keyof ModelBrief, value: string) => setBrief((current) => ({ ...current, [key]: value }));
 
@@ -88,10 +138,19 @@ export function ModelBuilder({ activeAssets, onApplyAssets, onResetAssets }: Mod
 
   const readFile = async (kind: AssetKind, file: File | undefined) => {
     if (!file) return;
-    setBusy(kind);
+    const request = (fileRequestsRef.current[kind] ?? 0) + 1;
+    fileRequestsRef.current[kind] = request;
+    setBusyKinds((current) => ({ ...current, [kind]: true }));
     setFileErrors((current) => ({ ...current, [kind]: undefined }));
+    if (kind !== "background") {
+      rigRequestRef.current += 1;
+      setRigInference(null);
+      setRigBusy(false);
+      setRigError(null);
+    }
     try {
       const inspection = await inspectImageFile(kind, file);
+      if (!mountedRef.current || fileRequestsRef.current[kind] !== request) return;
       const url = URL.createObjectURL(file);
       ownedObjectUrlsRef.current.add(url);
       setCandidateAssets((current) => {
@@ -106,30 +165,33 @@ export function ModelBuilder({ activeAssets, onApplyAssets, onResetAssets }: Mod
       setInspections((current) => ({ ...current, [kind]: inspection }));
       if (kind === "blink" || kind === "mouthOpen") setOverlayState(kind);
     } catch (error) {
+      if (!mountedRef.current || fileRequestsRef.current[kind] !== request) return;
       setFileErrors((current) => ({
         ...current,
         [kind]: error instanceof Error ? error.message : "画像を確認できませんでした。",
       }));
     } finally {
-      setBusy(null);
+      if (mountedRef.current && fileRequestsRef.current[kind] === request) setBusyKinds((current) => ({ ...current, [kind]: false }));
     }
   };
 
   const copyPrompt = async (key: keyof typeof prompts) => {
     try {
       await copyText(prompts[key]);
+      if (!mountedRef.current) return;
       setCopied(key);
-      window.setTimeout(() => setCopied(null), 1_600);
+      window.clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = window.setTimeout(() => setCopied(null), 1_600);
     } catch {
-      setCopied(null);
+      if (mountedRef.current) setCopied(null);
     }
   };
 
   const saveManifest = () => {
     saveText(JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       modelType: "lightweight-web-expression-state-rig",
-      renderer: "custom-webgl-mesh",
+      renderer: "custom-webgl-mesh" as const,
       generatedAt,
       tool: toolName,
       reference,
@@ -137,11 +199,19 @@ export function ModelBuilder({ activeAssets, onApplyAssets, onResetAssets }: Mod
       prompts,
       inspections,
       validation,
+      profile: candidateProfile,
+      rigInference: rigInference ? {
+        method: "registered-expression-differences-and-alpha-silhouette",
+        confidence: rigInference.confidence,
+        notes: rigInference.notes,
+        manuallyAdjusted: rigManuallyAdjusted,
+      } : null,
     }, null, 2), "local-avatar-rig-model-manifest.json", "application/json;charset=utf-8");
   };
 
   const applyCandidateAssets = () => {
-    onApplyAssets(candidateAssets);
+    if (!canApply) return;
+    onApplyAssets(candidateAssets, candidateProfile);
     const appliedUrls = new Set(Object.values(candidateAssets));
     for (const url of ownedObjectUrlsRef.current) {
       if (appliedUrls.has(url)) ownedObjectUrlsRef.current.delete(url);
@@ -215,7 +285,8 @@ export function ModelBuilder({ activeAssets, onApplyAssets, onResetAssets }: Mod
                     <small>SHA {inspection.sha256.slice(0, 12)}…</small>
                   </>
                 ) : <span>{error ?? (kind === "background" ? "権利を確認したPNG" : "透明PNGを選択")}</span>}
-                <button type="button" onClick={() => chooseFile(kind)} disabled={busy === kind}>{busy === kind ? "検査中…" : inspection ? "差し替え" : "選択"}</button>
+                <button type="button" onClick={() => chooseFile(kind)} disabled={busyKinds[kind]}>{busyKinds[kind] ? "検査中…" : inspection ? "差し替え" : "選択"}</button>
+                {inspection && error ? <small role="alert">{error}</small> : null}
               </div>
             );
           })}
@@ -249,15 +320,42 @@ export function ModelBuilder({ activeAssets, onApplyAssets, onResetAssets }: Mod
           </div>
         ) : null}
 
+        <section className="bone-setup" aria-label="画像からのボーン設定">
+          <div className="section-heading"><div><Sparkles size={17} /><strong>画像からボーンを推定</strong></div></div>
+          <div className="bone-inference-status" role="status" data-confidence={rigInference?.confidence}>
+            {rigBusy ? "目・口の差分とキャラクターの輪郭から、関節位置を推定しています…" : rigInference ? (
+              <>
+                <strong>{rigInference.confidence === "low" ? "推定・位置確認が必要です" : "画像から推定しました。関節位置をご確認ください。"}</strong>
+                <ul>{rigInference.notes.map((note) => <li key={note}>{note}</li>)}</ul>
+              </>
+            ) : "Neutral・Blink・Mouth-openの3枚が取込条件を満たすと、自動でボーンを推定します。"}
+          </div>
+          {rigError ? <p className="bone-inference-error" role="alert">{rigError}</p> : null}
+          {rigInference && !rigBusy ? <BoneEditor image={candidateAssets.neutral} profile={candidateProfile} onChange={(nextProfile) => {
+            setCandidateProfile(nextProfile);
+            setRigManuallyAdjusted(true);
+          }} /> : null}
+          <div className="builder-actions">
+            <button type="button" className="secondary" disabled={!readyForRig || rigBusy} onClick={() => {
+              rigRequestRef.current += 1;
+              setRigBusy(true);
+              setRigInference(null);
+              setRigRevision((current) => current + 1);
+            }}><Sparkles size={15} />画像からボーンを再推定</button>
+          </div>
+        </section>
+
         <div className="provenance-grid">
           <label><span>生成ツール</span><input value={toolName} onChange={(event) => setToolName(event.target.value)} /></label>
           <label><span>生成日</span><input type="date" value={generatedAt} onChange={(event) => setGeneratedAt(event.target.value)} /></label>
           <label className="wide"><span>参照元・利用条件</span><textarea value={reference} onChange={(event) => setReference(event.target.value)} /></label>
         </div>
         <div className="builder-actions">
-          <button type="button" disabled={!validation.valid} onClick={applyCandidateAssets}><Check size={16} />検証済み素材をプレビューへ適用</button>
-          <button type="button" className="secondary" onClick={saveManifest} disabled={!requiredLoaded}><Download size={16} />Manifestを保存</button>
+          <button type="button" disabled={!canApply} onClick={applyCandidateAssets}><Check size={16} />検証済み素材をプレビューへ適用</button>
+          <button type="button" className="secondary" onClick={saveManifest} disabled={!canApply}><Download size={16} />Manifestを保存</button>
           <button type="button" className="secondary" onClick={() => {
+            rigRequestRef.current += 1;
+            for (const kind of Object.keys(labels) as AssetKind[]) fileRequestsRef.current[kind] = (fileRequestsRef.current[kind] ?? 0) + 1;
             const activeUrls = new Set(Object.values(activeAssetsRef.current));
             for (const url of ownedObjectUrlsRef.current) {
               if (!activeUrls.has(url)) URL.revokeObjectURL(url);
@@ -266,6 +364,10 @@ export function ModelBuilder({ activeAssets, onApplyAssets, onResetAssets }: Mod
             setCandidateAssets(DEFAULT_ASSETS);
             setInspections({});
             setFileErrors({});
+            setBusyKinds({});
+            setRigInference(null);
+            setRigBusy(false);
+            setRigError(null);
             onResetAssets();
           }}><RotateCcw size={16} />標準モデルへ戻す</button>
         </div>

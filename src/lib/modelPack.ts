@@ -1,4 +1,5 @@
 import type { AvatarTextureSources, RigProfile } from "./webglAvatarRenderer";
+import { DEFAULT_AVATAR_BONES } from "./avatarRigProfile";
 
 export type AssetKind = "neutral" | "blink" | "mouthOpen" | "background";
 
@@ -71,6 +72,7 @@ const DEFAULT_NAVIGATOR_PROFILE: RigProfile = {
   leftEyeCenter: [0.4455, 0.3745],
   rightEyeCenter: [0.5615, 0.3745],
   mouthCenter: [0.4995, 0.4890],
+  bones: DEFAULT_AVATAR_BONES,
 };
 
 export const BUILT_IN_AVATAR_PACKS: Record<BuiltInAvatarPackId, BuiltInAvatarPack> = {
@@ -136,8 +138,9 @@ export function buildModelPrompts(brief: ModelBrief): ModelPromptPack {
       `Outfit: ${outfit}`,
       `Signature motif: ${motif}`,
       "Rig affordances: distinct front bangs, left and right side locks, back hair mass, face, neck, shoulders, torso, and sleeves; unobstructed eyes and mouth",
+      "Anatomy for rigging: a natural short straight neck beneath the jaw; clearly readable chin, neck base and collar; level shoulders; head centered over the neck and chest; preserve these junctions in every expression state",
       "Constraints: genuinely transparent alpha background; original design; no text; no watermark; no logo; no backdrop; no props; no cropped hair or shoulders; no duplicate body parts",
-      `Avoid: ${exclusions}; opaque background; painted checkerboard; dynamic pose; face occlusion; loose strands crossing the eyes or mouth`,
+      `Avoid: ${exclusions}; opaque background; painted checkerboard; dynamic pose; face occlusion; loose strands crossing the eyes or mouth; twisted or elongated neck; shoulder tilt; collar merging into the jaw`,
     ].join("\n"),
     blink: [
       "Use case: identity-preserve",
@@ -182,8 +185,10 @@ export function formatPromptDocument(brief: ModelBrief, prompts: ModelPromptPack
     `## 受入条件\n\n` +
     `- 3状態は同じ1672x941、正面、同一位置、実アルファPNG\n` +
     `- 髪、肩、袖を切らない\n` +
+    `- 顎の下に自然な短い首を置き、襟元と水平な肩の境界を明瞭にする\n` +
     `- blinkはまぶた、mouth-openは口以外を変えない\n` +
     `- neutralとの重ね合わせで輪郭が跳ねない\n` +
+    `- 取込後のボーン推定で頭の付け根を顎の下、首の根元を襟元、肩と胸を胴体へ合わせる\n` +
     `- 明暗両背景で縁に白・黒・市松が出ない\n`;
 }
 

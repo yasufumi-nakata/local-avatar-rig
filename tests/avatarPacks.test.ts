@@ -7,6 +7,7 @@ import {
   DEFAULT_PROFILE,
   isBuiltInAvatarPackId,
 } from "../src/lib/modelPack";
+import { hasValidBones } from "../src/lib/avatarRigProfile";
 
 describe("built-in avatar packs", () => {
   it("publishes only the verified Default Navigator pack", () => {
@@ -24,6 +25,7 @@ describe("built-in avatar packs", () => {
       expect(pack.profile.leftEyeCenter).toHaveLength(2);
       expect(pack.profile.rightEyeCenter).toHaveLength(2);
       expect(pack.profile.mouthCenter).toHaveLength(2);
+      expect(hasValidBones(pack.profile.bones)).toBe(true);
       expect(Object.values(pack.assets).every((url) => url.startsWith("/assets/"))).toBe(true);
     }
   });

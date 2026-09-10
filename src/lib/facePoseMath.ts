@@ -3,6 +3,7 @@ import type { FaceRigPose } from "./faceRigPose";
 export interface FaceTrackingSample extends FaceRigPose {
   centerX: number;
   centerY: number;
+  /** Relative temple span including MediaPipe depth, in image-width units. */
   faceWidth: number;
 }
 

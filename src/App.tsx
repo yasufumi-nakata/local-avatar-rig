@@ -13,11 +13,12 @@ import {
   type BuiltInAvatarPackId,
   type LocalAvatarAssetSet,
 } from "./lib/modelPack";
-import type { RigProfile } from "./lib/webglAvatarRenderer";
+import { hasValidBones, isRigPoint, type RigProfile } from "./lib/avatarRigProfile";
 import "./avatar-rig.css";
 import "./styles.css";
 
 type PanelTab = "control" | "model" | "guide";
+type ProfilesByModel = Partial<Record<BuiltInAvatarPackId, RigProfile>>;
 
 interface StoredPreferences {
   motion: boolean;
@@ -26,22 +27,22 @@ interface StoredPreferences {
   profile: RigProfile;
   activeModelId: BuiltInAvatarPackId;
   profileModelId: BuiltInAvatarPackId;
+  profilesByModel: ProfilesByModel;
 }
 
 const SETTINGS_KEY = "local-avatar-rig:preferences:v2";
 
-function hasValidProfile(profile: Partial<RigProfile> | undefined): profile is RigProfile {
-  const coordinates = profile
-    ? [...(profile.leftEyeCenter ?? []), ...(profile.rightEyeCenter ?? []), ...(profile.mouthCenter ?? [])]
-    : [];
-  return Boolean(
-    profile
-    && profile.leftEyeCenter?.length === 2
-    && profile.rightEyeCenter?.length === 2
-    && profile.mouthCenter?.length === 2
-    && coordinates.length === 6
-    && coordinates.every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1),
-  );
+function readProfile(profile: unknown): RigProfile | undefined {
+  if (!profile || typeof profile !== "object") return undefined;
+  const candidate = profile as Partial<RigProfile>;
+  if (!isRigPoint(candidate.leftEyeCenter) || !isRigPoint(candidate.rightEyeCenter) || !isRigPoint(candidate.mouthCenter)) return undefined;
+  // 旧設定は引き継ぎ、壊れたボーンだけを省いて有効な顔パッチ位置を残します。
+  return {
+    leftEyeCenter: candidate.leftEyeCenter,
+    rightEyeCenter: candidate.rightEyeCenter,
+    mouthCenter: candidate.mouthCenter,
+    ...(hasValidBones(candidate.bones) ? { bones: candidate.bones } : {}),
+  };
 }
 
 function loadPreferences(): StoredPreferences {
@@ -53,6 +54,7 @@ function loadPreferences(): StoredPreferences {
     profile: defaultPack.profile,
     activeModelId: defaultPack.id,
     profileModelId: defaultPack.id,
+    profilesByModel: {},
   };
   try {
     const parsed = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? "null") as Partial<StoredPreferences> | null;
@@ -61,9 +63,20 @@ function loadPreferences(): StoredPreferences {
         ? parsed.activeModelId
         : fallback.activeModelId;
       const pack = BUILT_IN_AVATAR_PACKS[activeModelId];
-      const profile = hasValidProfile(parsed.profile) && parsed.profileModelId === activeModelId
-        ? parsed.profile
-        : pack.profile;
+      const profilesByModel: ProfilesByModel = {};
+      for (const modelId of Object.keys(BUILT_IN_AVATAR_PACKS)) {
+        if (!isBuiltInAvatarPackId(modelId)) continue;
+        const profile = readProfile(parsed.profilesByModel?.[modelId]);
+        if (profile) profilesByModel[modelId] = profile;
+      }
+      // 単一profileしか持たない旧設定は、選択中モデルではなく記録されたモデルへ引き継ぎます。
+      const olderProfile = readProfile(parsed.profile);
+      if (isBuiltInAvatarPackId(parsed.profileModelId)
+        && !profilesByModel[parsed.profileModelId]
+        && olderProfile) {
+        profilesByModel[parsed.profileModelId] = olderProfile;
+      }
+      const profile = profilesByModel[activeModelId] ?? pack.profile;
       return {
         motion: parsed.motion ?? fallback.motion,
         pointerFollow: parsed.pointerFollow ?? fallback.pointerFollow,
@@ -73,6 +86,7 @@ function loadPreferences(): StoredPreferences {
         profile,
         activeModelId,
         profileModelId: activeModelId,
+        profilesByModel,
       };
     }
 
@@ -83,7 +97,7 @@ function loadPreferences(): StoredPreferences {
 }
 
 export default function App() {
-  const preferences = useRef(loadPreferences()).current;
+  const [preferences] = useState(loadPreferences);
   const initialPack = BUILT_IN_AVATAR_PACKS[preferences.activeModelId];
   const rigRef = useRef<HTMLDivElement>(null);
   const manualPoseRef = useRef<FaceRigPose>({ ...NEUTRAL_FACE_RIG_POSE });
@@ -91,9 +105,13 @@ export default function App() {
   const [motion, setMotion] = useState(preferences.motion);
   const [pointerFollow, setPointerFollow] = useState(preferences.pointerFollow);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(preferences.backgroundMode);
-  const [profile, setProfile] = useState<RigProfile>(preferences.profile);
+  const [profilesByModel, setProfilesByModel] = useState(preferences.profilesByModel);
+  const [customProfile, setCustomProfile] = useState<RigProfile>(preferences.profile);
   const [assets, setAssets] = useState<LocalAvatarAssetSet>(initialPack.assets);
   const [activeModelId, setActiveModelId] = useState<BuiltInAvatarPackId | "custom">(initialPack.id);
+  const profile = activeModelId === "custom"
+    ? customProfile
+    : profilesByModel[activeModelId] ?? BUILT_IN_AVATAR_PACKS[activeModelId].profile;
   const [tab, setTab] = useState<PanelTab>("control");
   const faceTracking = useFaceTracking({ rigRef });
   const microphone = useMicrophoneLevel();
@@ -107,9 +125,8 @@ export default function App() {
       const persistedModelId = activeModelId === "custom"
         ? DEFAULT_BUILT_IN_AVATAR_PACK_ID
         : activeModelId;
-      const persistedProfile = activeModelId === "custom"
-        ? BUILT_IN_AVATAR_PACKS[persistedModelId].profile
-        : profile;
+      const persistedProfile = profilesByModel[persistedModelId]
+        ?? BUILT_IN_AVATAR_PACKS[persistedModelId].profile;
       window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({
         motion,
         pointerFollow,
@@ -117,14 +134,15 @@ export default function App() {
         profile: persistedProfile,
         activeModelId: persistedModelId,
         profileModelId: persistedModelId,
+        profilesByModel,
       }));
     } catch {
       // The studio remains functional when persistent browser storage is unavailable.
     }
-  }, [activeModelId, backgroundMode, motion, pointerFollow, profile]);
+  }, [activeModelId, backgroundMode, motion, pointerFollow, profilesByModel]);
 
   useEffect(() => {
-    const nextUrls = new Set(Object.values(assets).filter((url) => url.startsWith("blob:")));
+    const nextUrls = new Set(Object.values(assets).filter((url) => url?.startsWith("blob:")));
     for (const url of activeBlobUrlsRef.current) {
       if (!nextUrls.has(url)) URL.revokeObjectURL(url);
     }
@@ -145,19 +163,25 @@ export default function App() {
     if (microphone.running) microphone.stop();
     else void microphone.start();
   };
-  const applyAssets = (nextAssets: LocalAvatarAssetSet) => {
+  const applyAssets = (nextAssets: LocalAvatarAssetSet, nextProfile: RigProfile) => {
     for (const url of Object.values(nextAssets)) {
-      if (url.startsWith("blob:")) activeBlobUrlsRef.current.add(url);
+      if (url?.startsWith("blob:")) activeBlobUrlsRef.current.add(url);
     }
     setAssets(nextAssets);
+    setCustomProfile(nextProfile);
     setActiveModelId("custom");
+    setManualPose({ ...NEUTRAL_FACE_RIG_POSE });
   };
   const selectBuiltInModel = (modelId: BuiltInAvatarPackId) => {
+    if (modelId === activeModelId) return;
     const pack = BUILT_IN_AVATAR_PACKS[modelId];
     setActiveModelId(modelId);
     setAssets(pack.assets);
-    setProfile(pack.profile);
     setManualPose({ ...NEUTRAL_FACE_RIG_POSE });
+  };
+  const updateProfile = (nextProfile: RigProfile) => {
+    if (activeModelId === "custom") setCustomProfile(nextProfile);
+    else setProfilesByModel((current) => ({ ...current, [activeModelId]: nextProfile }));
   };
   const avatarAlt = activeModelId === "custom"
     ? "利用者が読み込んだオリジナル2D VTuberアバター"
@@ -218,6 +242,7 @@ export default function App() {
           {tab === "control" ? (
             <ControlPanel
               activeModelId={activeModelId}
+              neutralImage={assets.neutral}
               onModelChange={selectBuiltInModel}
               pose={manualPose}
               onPoseChange={setManualPose}
@@ -228,7 +253,7 @@ export default function App() {
               backgroundMode={backgroundMode}
               onBackgroundModeChange={setBackgroundMode}
               profile={profile}
-              onProfileChange={setProfile}
+              onProfileChange={updateProfile}
               faceTracking={{
                 supported: faceTracking.supported,
                 running: faceTracking.running,
@@ -248,6 +273,7 @@ export default function App() {
           ) : tab === "model" ? (
             <ModelBuilder
               activeAssets={assets}
+              activeProfile={profile}
               onApplyAssets={applyAssets}
               onResetAssets={() => {
                 selectBuiltInModel(DEFAULT_BUILT_IN_AVATAR_PACK_ID);

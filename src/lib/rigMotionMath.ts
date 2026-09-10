@@ -14,6 +14,7 @@ export interface SecondaryMotionFrame {
 }
 
 const PHYSICS_STEP = 1 / 60;
+const MAX_PHYSICS_ELAPSED = 0.1;
 const BLINK_FIRST_START = 2_500;
 const BLINK_BASE_INTERVAL = 4_300;
 const BLINK_JITTER_SPAN = 1_200;
@@ -119,9 +120,10 @@ export class SecondaryMotionController {
       return this.frame();
     }
 
-    this.accumulator = Math.min(0.1, this.accumulator + clamp(elapsedSeconds, 0, 0.05));
+    // 10fpsまで実時間に追従し、長い停止後も前フレームの端数を保持します。
+    this.accumulator += clamp(elapsedSeconds, 0, MAX_PHYSICS_ELAPSED);
     let applyImpulse = true;
-    while (this.accumulator >= PHYSICS_STEP) {
+    while (this.accumulator + Number.EPSILON >= PHYSICS_STEP) {
       springStep(this.bodyX, bodyXTarget, 46, 13.5);
       springStep(this.bodyZ, bodyZTarget, 42, 12.5);
 
@@ -152,7 +154,7 @@ export class SecondaryMotionController {
         this.pendingRollDelta = 0;
         applyImpulse = false;
       }
-      this.accumulator -= PHYSICS_STEP;
+      this.accumulator = Math.max(0, this.accumulator - PHYSICS_STEP);
     }
     return this.frame();
   }

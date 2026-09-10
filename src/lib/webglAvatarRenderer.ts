@@ -1,3 +1,7 @@
+import { RIG_VERTEX_SHADER } from "./avatarVertexShader";
+import { resolveAvatarBones, type RigProfile } from "./avatarRigProfile";
+export { RIG_VERTEX_SHADER } from "./avatarVertexShader";
+export type { RigProfile } from "./avatarRigProfile";
 import type { FaceRigPose } from "./faceRigPose";
 import {
   autoBlinkEnvelope,
@@ -30,18 +34,16 @@ interface Uniforms {
   leftEyeCenter: WebGLUniformLocation;
   rightEyeCenter: WebGLUniformLocation;
   mouthCenter: WebGLUniformLocation;
+  headPivot: WebGLUniformLocation;
+  neckPivot: WebGLUniformLocation;
+  chestPivot: WebGLUniformLocation;
+  shoulders: WebGLUniformLocation;
 }
 
 export interface AvatarTextureSources {
   neutral: string;
   blink: string;
   mouthOpen: string;
-}
-
-export interface RigProfile {
-  leftEyeCenter: readonly [number, number];
-  rightEyeCenter: readonly [number, number];
-  mouthCenter: readonly [number, number];
 }
 
 export const DEFAULT_AVATAR_TEXTURES: AvatarTextureSources = {
@@ -55,115 +57,6 @@ export const DEFAULT_RIG_PROFILE: RigProfile = {
   rightEyeCenter: [0.5615, 0.3745],
   mouthCenter: [0.4995, 0.4890],
 };
-
-const VERTEX_SHADER = `
-  precision highp float;
-  attribute vec2 a_uv;
-  varying vec2 v_uv;
-
-  uniform vec4 u_head;
-  uniform vec4 u_body;
-  uniform vec3 u_hair;
-  uniform vec2 u_translate;
-  uniform float u_aspect;
-  uniform vec2 u_mouth;
-
-  const float PI = 3.141592653589793;
-
-  float ellipseDistance(vec2 point, vec2 center, vec2 radius) {
-    return length((point - center) / radius);
-  }
-
-  float ellipseWeight(vec2 point, vec2 center, vec2 radius, float innerEdge, float outerEdge) {
-    return 1.0 - smoothstep(innerEdge, outerEdge, ellipseDistance(point, center, radius));
-  }
-
-  // UVは縦横比が1:1ではないため、そのまま回転すると横方向だけ伸びた
-  // せん断になります。表示比率へ戻してから回すことで剛体回転にします。
-  vec2 rotateAround(vec2 point, vec2 pivot, float angle) {
-    float cosine = cos(angle);
-    float sine = sin(angle);
-    vec2 local = (point - pivot) * vec2(u_aspect, 1.0);
-    vec2 rotated = vec2(local.x * cosine - local.y * sine, local.x * sine + local.y * cosine);
-    return pivot + rotated / vec2(u_aspect, 1.0);
-  }
-
-  void main() {
-    vec2 source = a_uv;
-    vec2 point = source;
-
-    // 胴体だけを遅れて傾け、呼吸変形も首より下へ限定します。
-    float headMask = ellipseWeight(source, vec2(0.5, 0.315), vec2(0.205, 0.335), 0.74, 1.08);
-    float faceMask = ellipseWeight(source, vec2(0.5, 0.405), vec2(0.118, 0.180), 0.72, 1.08);
-    float torsoMask = smoothstep(0.50, 0.70, source.y) * (1.0 - headMask * 0.84);
-    vec2 bodyPoint = rotateAround(point, vec2(0.5, 0.84), u_body.z * PI / 180.0);
-    float bodyTurn = clamp(u_body.x / 10.0, -1.0, 1.0);
-    bodyPoint.x += bodyTurn * 0.007;
-    bodyPoint.x = 0.5 + (bodyPoint.x - 0.5) * (1.0 - abs(bodyTurn) * 0.012);
-    bodyPoint.x = 0.5 + (bodyPoint.x - 0.5) * (1.0 + u_body.w * 0.0065);
-    bodyPoint.y += u_body.w * 0.0038;
-    point = mix(point, bodyPoint, torsoMask);
-
-    // 板の3D回転ではなく、顔内部を輪郭より大きく
-    // 非対称移動させることでAngleX/Yのパララックスを作ります。
-    float yaw = clamp(u_head.x / 30.0, -1.0, 1.0);
-    float pitch = clamp(u_head.y / 30.0, -1.0, 1.0);
-    // ラスター一枚からの軽量変形では大角度で輪郭が欠けるため、AngleZの
-    // パラメータ域は維持しつつ見た目の回転量を破綻しない範囲に抑えます。
-    vec2 headPoint = rotateAround(point, vec2(0.5, 0.585), u_head.z * 0.62 * PI / 180.0);
-    float normalizedX = clamp((source.x - 0.5) / 0.205, -1.0, 1.0);
-    float turn = abs(yaw);
-    float yawDirection = yaw < 0.0 ? -1.0 : 1.0;
-    float jawMask = ellipseWeight(source, vec2(0.5, 0.505), vec2(0.105, 0.105), 0.25, 1.05)
-      * smoothstep(0.45, 0.58, source.y);
-    float farSide = smoothstep(0.05, 0.85, -normalizedX * yaw);
-    // 外周の髪は小さく、目鼻口を含む顔内部は大きく動かします。これにより
-    // 頭全体の横滑りではなく、輪郭内で顔が向きを変えるパララックスになります。
-    headPoint.x += yaw * 0.006 * headMask;
-    headPoint.x += yaw * (0.020 + jawMask * 0.007) * faceMask;
-    headPoint.x += yawDirection * farSide * turn * 0.007 * faceMask;
-    float facePerspectiveX = 0.5 + (headPoint.x - 0.5) * (1.0 - turn * 0.055);
-    headPoint.x = mix(headPoint.x, facePerspectiveX, faceMask * 0.86);
-    headPoint.y -= pitch * (0.011 + 0.005 * faceMask) * headMask;
-    headPoint.y += pitch * (source.y - 0.40) * 0.018 * faceMask;
-    // 首元の欠けを隠すための収縮量です。回転が剛体になった分だけ弱めます。
-    float rollSafety = clamp(abs(u_head.z) / 30.0, 0.0, 1.0);
-    headPoint = vec2(0.5, 0.585) + (headPoint - vec2(0.5, 0.585)) * (1.0 - rollSafety * 0.018);
-    headPoint.y += rollSafety * 0.006;
-    point = mix(point, headPoint, headMask);
-
-    // 口が開くと下唇より下だけをわずかに下げ、顎と頬の静止感を減らします。
-    float mouthOpen = clamp(u_mouth.x, 0.0, 1.0);
-    float lowerFaceMask = ellipseWeight(source, vec2(0.5, 0.525), vec2(0.090, 0.100), 0.18, 1.05)
-      * smoothstep(0.48, 0.59, source.y);
-    vec2 lowerFacePoint = point;
-    lowerFacePoint.y += mouthOpen * 0.011;
-    lowerFacePoint.x = 0.5 + (lowerFacePoint.x - 0.5) * (1.0 - mouthOpen * 0.022);
-    point = mix(point, lowerFacePoint, lowerFaceMask);
-
-    // 前髪・横髪・後髪を別の物理出力として重ねます。中央の顔面は動かしません。
-    float upperHair = headMask * (1.0 - smoothstep(0.31, 0.43, source.y));
-    float outerHair = headMask * (1.0 - faceMask * 0.93);
-    float sideDistance = smoothstep(0.09, 0.19, abs(source.x - 0.5));
-    float sideHair = max(outerHair * sideDistance, headMask * sideDistance * smoothstep(0.25, 0.58, source.y));
-    float backHair = outerHair * (1.0 - sideDistance * 0.45);
-    float frontHair = max(upperHair, headMask * smoothstep(0.27, 0.43, source.y) * (1.0 - smoothstep(0.43, 0.57, source.y)) * 0.55);
-    float hairTip = smoothstep(0.19, 0.60, source.y);
-    float hairSway = frontHair * (u_hair.x / 2.5) + sideHair * (u_hair.y / 5.0) + backHair * (u_hair.z / 2.5);
-    vec2 hairPoint = rotateAround(point, vec2(0.5, 0.16), hairSway * 0.018 * hairTip);
-    hairPoint.x += hairSway * 0.0055 * hairTip;
-    hairPoint.y += abs(hairSway) * 0.0015 * hairTip;
-    point = mix(point, hairPoint, clamp(max(frontHair, max(sideHair, backHair)), 0.0, 1.0));
-
-    // 顔の位置移動は主に頭部へ伝え、肩は15%だけ追従します。
-    float translationWeight = clamp(headMask + torsoMask * 0.15, 0.0, 1.0);
-    point += u_translate * translationWeight;
-    point = vec2(0.5, 0.78) + (point - vec2(0.5, 0.78)) * u_head.w;
-
-    v_uv = source;
-    gl_Position = vec4(point.x * 2.0 - 1.0, 1.0 - point.y * 2.0, 0.0, 1.0);
-  }
-`;
 
 const FRAGMENT_SHADER = `
   precision highp float;
@@ -186,11 +79,12 @@ const FRAGMENT_SHADER = `
 
   void main() {
     vec4 color = texture2D(u_neutral, v_uv);
+    float rigScale = max(0.035, abs(u_right_eye_center.x - u_left_eye_center.x)) / 0.116;
 
     // ParamEyeBallX/Y相当。虹彩中心だけを局所サンプリングして左右を同期移動します。
-    vec2 gaze = vec2(u_eye.x * 0.0042, -u_eye.y * 0.0032);
-    float leftIris = ellipseMask(v_uv, u_left_eye_center, vec2(0.019, 0.034), 0.36);
-    float rightIris = ellipseMask(v_uv, u_right_eye_center, vec2(0.019, 0.034), 0.36);
+    vec2 gaze = vec2(u_eye.x * 0.0042, -u_eye.y * 0.0032) * rigScale;
+    float leftIris = ellipseMask(v_uv, u_left_eye_center, vec2(0.019, 0.034) * rigScale, 0.36);
+    float rightIris = ellipseMask(v_uv, u_right_eye_center, vec2(0.019, 0.034) * rigScale, 0.36);
     float irisMask = max(leftIris * (1.0 - u_eye_blink.x), rightIris * (1.0 - u_eye_blink.y));
     vec4 shiftedEye = texture2D(u_neutral, v_uv - gaze);
     color = mix(color, shiftedEye, irisMask * 0.88);
@@ -200,8 +94,8 @@ const FRAGMENT_SHADER = `
     // なるため、切り替わりを短い区間へ寄せて実際の瞬きに近づけます。
     float leftClosed = smoothstep(0.38, 0.62, u_eye_blink.x);
     float rightClosed = smoothstep(0.38, 0.62, u_eye_blink.y);
-    float leftEye = ellipseMask(v_uv, u_left_eye_center, vec2(0.058, 0.060), 0.34) * leftClosed;
-    float rightEye = ellipseMask(v_uv, u_right_eye_center, vec2(0.058, 0.060), 0.34) * rightClosed;
+    float leftEye = ellipseMask(v_uv, u_left_eye_center, vec2(0.058, 0.060) * rigScale, 0.34) * leftClosed;
+    float rightEye = ellipseMask(v_uv, u_right_eye_center, vec2(0.058, 0.060) * rigScale, 0.34) * rightClosed;
     vec4 closedEye = texture2D(u_blink_texture, v_uv);
     color = mix(color, closedEye, clamp(max(leftEye, rightEye), 0.0, 1.0));
 
@@ -213,20 +107,20 @@ const FRAGMENT_SHADER = `
     float openAmount = clamp(u_mouth.x, 0.0, 1.0);
     float smile = clamp(u_mouth.y, 0.0, 1.0);
     vec2 mouthCenter = u_mouth_center;
-    float smileX = clamp((v_uv.x - mouthCenter.x) / 0.020, -1.0, 1.0);
+    float smileX = clamp((v_uv.x - mouthCenter.x) / (0.020 * rigScale), -1.0, 1.0);
     vec2 smileSourceUv = vec2(
       mouthCenter.x + (v_uv.x - mouthCenter.x) * (1.0 - smile * 0.10),
-      v_uv.y + smile * (0.0005 + 0.0040 * smileX * smileX)
+      v_uv.y + smile * (0.0005 + 0.0040 * smileX * smileX) * rigScale
     );
-    float smilePatch = ellipseMask(v_uv, mouthCenter, vec2(0.042, 0.024), 0.42);
+    float smilePatch = ellipseMask(v_uv, mouthCenter, vec2(0.042, 0.024) * rigScale, 0.42);
     color = mix(color, texture2D(u_neutral, smileSourceUv), smilePatch * smile * 0.86);
     // 不透明度だけで2枚を混ぜると中間の開き具合が二重写しになるため、
     // 開き量では口差分を縦に潰して実際の開口量として見せます。参照位置は
     // 口の周囲（肌）までに制限し、目や首を口へ引き込まないようにします。
     float openScale = mix(0.26, 1.0, openAmount);
-    float sourceOffsetY = clamp((v_uv.y - mouthCenter.y) / openScale, -0.040, 0.040);
+    float sourceOffsetY = clamp((v_uv.y - mouthCenter.y) / openScale, -0.040 * rigScale, 0.040 * rigScale);
     vec4 openMouth = texture2D(u_mouth_texture, vec2(v_uv.x, mouthCenter.y + sourceOffsetY));
-    float mouthPatch = ellipseMask(v_uv, mouthCenter, vec2(0.036, 0.030), 0.30);
+    float mouthPatch = ellipseMask(v_uv, mouthCenter, vec2(0.036, 0.030) * rigScale, 0.30);
     float mouthBlend = mouthPatch * smoothstep(0.02, 0.14, openAmount);
     color = mix(color, openMouth, mouthBlend);
 
@@ -248,7 +142,7 @@ function compileShader(gl: WebGLRenderingContext, type: number, source: string) 
 }
 
 function createProgram(gl: WebGLRenderingContext) {
-  const vertex = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
+  const vertex = compileShader(gl, gl.VERTEX_SHADER, RIG_VERTEX_SHADER);
   const fragment = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
   const program = gl.createProgram();
   if (!program) throw new Error("アバター用描画プログラムを作成できませんでした。");
@@ -335,6 +229,8 @@ export class WebGLAvatarRenderer {
   private readonly indexCount: number;
   private textures: WebGLTexture[] = [];
   private initialized = false;
+  private destroyed = false;
+  private initializationId = 0;
   private lastFrameAt = 0;
   private readonly secondaryMotion = new SecondaryMotionController();
   private eyeX = 0;
@@ -374,6 +270,10 @@ export class WebGLAvatarRenderer {
       leftEyeCenter: requiredUniform(gl, this.program, "u_left_eye_center"),
       rightEyeCenter: requiredUniform(gl, this.program, "u_right_eye_center"),
       mouthCenter: requiredUniform(gl, this.program, "u_mouth_center"),
+      headPivot: requiredUniform(gl, this.program, "u_head_pivot"),
+      neckPivot: requiredUniform(gl, this.program, "u_neck_pivot"),
+      chestPivot: requiredUniform(gl, this.program, "u_chest_pivot"),
+      shoulders: requiredUniform(gl, this.program, "u_shoulders"),
     };
 
     const mesh = createMesh();
@@ -390,17 +290,39 @@ export class WebGLAvatarRenderer {
   }
 
   async initialize(sources: AvatarTextureSources = DEFAULT_AVATAR_TEXTURES) {
-    const [neutral, blink, mouth] = await Promise.all([
-      loadImage(sources.neutral),
-      loadImage(sources.blink),
-      loadImage(sources.mouthOpen),
-    ]);
-    this.textures = [
-      createTexture(this.gl, neutral, 0),
-      createTexture(this.gl, blink, 1),
-      createTexture(this.gl, mouth, 2),
-    ];
+    if (this.destroyed) return;
+    const initializationId = ++this.initializationId;
+    this.initialized = false;
+    delete this.canvas.dataset.rigReady;
+
+    let images: HTMLImageElement[];
+    try {
+      images = await Promise.all([
+        loadImage(sources.neutral),
+        loadImage(sources.blink),
+        loadImage(sources.mouthOpen),
+      ]);
+    } catch (error) {
+      if (this.destroyed || initializationId !== this.initializationId) return;
+      throw error;
+    }
+    // モデル切替やStrictModeのcleanup後に旧ロードが完了しても、
+    // 新しい描画のready状態やGPUリソースへ触れないようにします。
+    if (this.destroyed || initializationId !== this.initializationId || this.gl.isContextLost()) return;
+
+    const textures: WebGLTexture[] = [];
+    try {
+      for (const [unit, image] of images.entries()) {
+        textures.push(createTexture(this.gl, image, unit));
+      }
+    } catch (error) {
+      for (const texture of textures) this.gl.deleteTexture(texture);
+      throw error;
+    }
+    for (const texture of this.textures) this.gl.deleteTexture(texture);
+    this.textures = textures;
     this.initialized = true;
+    delete this.canvas.dataset.rigError;
     this.canvas.dataset.rigReady = "true";
   }
 
@@ -421,10 +343,10 @@ export class WebGLAvatarRenderer {
     options: RigFrameOptions,
     profile: RigProfile = DEFAULT_RIG_PROFILE,
   ) {
-    if (!this.initialized) return;
+    if (!this.initialized || this.gl.isContextLost()) return;
     this.resize();
     const rawElapsed = this.lastFrameAt > 0 ? now - this.lastFrameAt : 16.667;
-    const elapsed = clamp(rawElapsed, 1, 50);
+    const elapsed = clamp(rawElapsed, 0, 100);
     const seconds = elapsed / 1_000;
     this.lastFrameAt = now;
 
@@ -482,12 +404,22 @@ export class WebGLAvatarRenderer {
     gl.uniform2f(this.uniforms.leftEyeCenter, ...profile.leftEyeCenter);
     gl.uniform2f(this.uniforms.rightEyeCenter, ...profile.rightEyeCenter);
     gl.uniform2f(this.uniforms.mouthCenter, ...profile.mouthCenter);
+    const bones = resolveAvatarBones(profile);
+    gl.uniform2f(this.uniforms.headPivot, ...bones.head);
+    gl.uniform2f(this.uniforms.neckPivot, ...bones.neck);
+    gl.uniform2f(this.uniforms.chestPivot, ...bones.chest);
+    gl.uniform4f(this.uniforms.shoulders, ...bones.leftShoulder, ...bones.rightShoulder);
     gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0);
   }
 
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.initialized = false;
+    this.initializationId += 1;
     const gl = this.gl;
     for (const texture of this.textures) gl.deleteTexture(texture);
+    this.textures = [];
     gl.deleteBuffer(this.vertexBuffer);
     gl.deleteBuffer(this.indexBuffer);
     gl.deleteProgram(this.program);

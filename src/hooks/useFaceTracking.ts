@@ -80,6 +80,7 @@ export function useFaceTracking({ rigRef }: UseFaceTrackingOptions) {
   const capturePendingRef = useRef(false);
   const lastCaptureRef = useRef(0);
   const lastAnimationRef = useRef(0);
+  const missingSinceRef = useRef<number | null>(null);
   const targetPoseRef = useRef<FaceRigPose>({ ...NEUTRAL_FACE_RIG_POSE });
   const currentPoseRef = useRef<FaceRigPose>({ ...NEUTRAL_FACE_RIG_POSE });
   const statusRef = useRef<FaceTrackingStatus>("idle");
@@ -106,6 +107,7 @@ export function useFaceTracking({ rigRef }: UseFaceTrackingOptions) {
     workerReadyRef.current = false;
     frameInFlightRef.current = false;
     capturePendingRef.current = false;
+    missingSinceRef.current = null;
     sessionRef.current += 1;
     window.cancelAnimationFrame(animationRef.current);
     animationRef.current = 0;
@@ -120,6 +122,7 @@ export function useFaceTracking({ rigRef }: UseFaceTrackingOptions) {
   const resetPose = useCallback((nextStatus: FaceTrackingStatus = "idle") => {
     targetPoseRef.current = { ...NEUTRAL_FACE_RIG_POSE };
     currentPoseRef.current = { ...NEUTRAL_FACE_RIG_POSE };
+    missingSinceRef.current = null;
     setRigPose(rigRef.current, currentPoseRef.current, nextStatus);
   }, [rigRef]);
 
@@ -136,6 +139,10 @@ export function useFaceTracking({ rigRef }: UseFaceTrackingOptions) {
       const previous = lastAnimationRef.current || now;
       const elapsed = Math.min(100, Math.max(0, now - previous));
       lastAnimationRef.current = now;
+      if (missingSinceRef.current !== null && now - missingSinceRef.current >= 300) {
+        targetPoseRef.current = { ...NEUTRAL_FACE_RIG_POSE };
+        missingSinceRef.current = null;
+      }
       const amount = 1 - Math.exp(-elapsed / 72);
       const current = currentPoseRef.current;
       const target = targetPoseRef.current;
@@ -231,6 +238,7 @@ export function useFaceTracking({ rigRef }: UseFaceTrackingOptions) {
           return;
         }
         if (data.type === "pose") {
+          missingSinceRef.current = null;
           targetPoseRef.current = data.pose;
           if (statusRef.current !== "tracking") {
             updateStatus("tracking", "顔追従中です。カメラ映像は保存・送信しません。");
@@ -238,7 +246,8 @@ export function useFaceTracking({ rigRef }: UseFaceTrackingOptions) {
           return;
         }
         if (data.type === "missing") {
-          targetPoseRef.current = { ...NEUTRAL_FACE_RIG_POSE };
+          // 単発の検出漏れで首を跳ね戻さず、継続して見失った場合だけ正面へ戻します。
+          if (missingSinceRef.current === null) missingSinceRef.current = performance.now();
           if (statusRef.current !== "searching") {
             updateStatus("searching", "顔を見失いました。カメラの中央へ戻ってください。");
           }
